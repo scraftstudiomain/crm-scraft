@@ -52,6 +52,12 @@ interface AddMemberResponse {
   message: string;
 }
 
+interface MemberRoleResponse {
+  data: {
+    role: string;
+  };
+}
+
 interface UpdateMemberResponse {
   data: Member;
   message: string;
@@ -77,7 +83,7 @@ export const memberApi = membersApi.injectEndpoints({
     }),
 
     // get member role
-    getMemberRole: builder.query<MembersResponse, string>({
+    getMemberRole: builder.query<MemberRoleResponse, string>({
       query: (workspaceId) => ({
         url: `?action=getMemberRole&workspaceId=${workspaceId}`,
         method: "GET",

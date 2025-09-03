@@ -2,6 +2,7 @@ import { NextApiRequest, NextApiResponse } from "next";
 import { supabase } from "@/lib/supabaseServer"; // Import the Supabase client
 import { AUTH_MESSAGES } from "@/lib/constant/auth";
 import { ActivityLogger } from "@/lib/services/activityLogger";
+import { ActivityType } from "@/lib/types/activity-logs";
 import { logger } from "@/lib/logger";
 
 export default async function handler(
@@ -891,6 +892,190 @@ export default async function handler(
             return res.status(500).json({ error: "Internal server error" });
           }
         }
+        default:
+          return res.status(400).json({ error: "Invalid action" });
+      }
+    }
+
+    case "DELETE": {
+      const authHeader = headers.authorization;
+      if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        return res.status(401).json({ error: AUTH_MESSAGES.UNAUTHORIZED });
+      }
+      const token = authHeader.split(" ")[1];
+
+      switch (action) {
+        case "deleteWorkspace": {
+          const { id: workspaceId } = body;
+
+          if (!workspaceId) {
+            return res.status(400).json({ error: "Workspace ID is required" });
+          }
+
+          try {
+            // Authenticate the user
+            const {
+              data: { user },
+            } = await supabase.auth.getUser(token);
+
+            if (!user) {
+              return res.status(401).json({ error: AUTH_MESSAGES.UNAUTHORIZED });
+            }
+
+            // Get workspace details
+            const { data: workspace, error: workspaceError } = await supabase
+              .from("workspaces")
+              .select("*")
+              .eq("id", workspaceId)
+              .single();
+
+            if (workspaceError) {
+              return res.status(404).json({ error: "Workspace not found" });
+            }
+
+            // Check if user is the workspace owner
+            const isOwner = workspace.owner_id === user.id;
+
+            // If not owner, check if user is SuperAdmin
+            if (!isOwner) {
+              const { data: memberData, error: memberError } = await supabase
+                .from("workspace_members")
+                .select("role")
+                .eq("workspace_id", workspaceId)
+                .eq("user_id", user.id)
+                .single();
+
+              if (memberError || !memberData) {
+                return res.status(403).json({ 
+                  error: "You don't have permission to delete this workspace" 
+                });
+              }
+
+              // Only SuperAdmin can delete workspace (not regular admin)
+              if (memberData.role !== "SuperAdmin") {
+                return res.status(403).json({ 
+                  error: "Only workspace owners and SuperAdmins can delete workspaces" 
+                });
+              }
+            }
+
+            // Log workspace deletion activity before deletion
+            try {
+              await ActivityLogger.logActivity({
+                workspace_id: workspaceId.toString(),
+                user_id: user.id,
+                member_email: user.email || '',
+                member_name: user.user_metadata?.name || user.user_metadata?.firstName,
+                activity_type: ActivityType.WORKSPACE_LEAVE,
+                activity_description: `Workspace "${workspace.name}" was deleted by ${user.email}`,
+                metadata: {
+                  workspace_name: workspace.name,
+                  resource_type: 'workspace_deletion'
+                },
+                ip_address: ActivityLogger.getClientIP(req),
+                user_agent: ActivityLogger.getUserAgent(req),
+              });
+            } catch (logError) {
+              console.error('Failed to log workspace deletion activity:', logError);
+              // Continue with deletion even if logging fails
+            }
+
+            // Start transaction-like deletion process
+            // 1. Delete all workspace members
+            const { error: membersError } = await supabase
+              .from("workspace_members")
+              .delete()
+              .eq("workspace_id", workspaceId);
+
+            if (membersError) {
+              console.error("Error deleting workspace members:", membersError);
+              return res.status(500).json({ 
+                error: "Failed to delete workspace members" 
+              });
+            }
+
+            // 2. Delete all leads associated with workspace
+            const { error: leadsError } = await supabase
+              .from("leads")
+              .delete()
+              .eq("work_id", workspaceId);
+
+            if (leadsError) {
+              console.error("Error deleting workspace leads:", leadsError);
+              return res.status(500).json({ 
+                error: "Failed to delete workspace leads" 
+              });
+            }
+
+            // 3. Delete all webhooks associated with workspace
+            const { error: webhooksError } = await supabase
+              .from("webhooks")
+              .delete()
+              .eq("workspace_id", workspaceId);
+
+            if (webhooksError) {
+              console.error("Error deleting workspace webhooks:", webhooksError);
+              return res.status(500).json({ 
+                error: "Failed to delete workspace webhooks" 
+              });
+            }
+
+            // 4. Delete all activity logs for workspace
+            const { error: activityLogsError } = await supabase
+              .from("member_activity_logs")
+              .delete()
+              .eq("workspace_id", workspaceId);
+
+            if (activityLogsError) {
+              console.error("Error deleting workspace activity logs:", activityLogsError);
+              return res.status(500).json({ 
+                error: "Failed to delete workspace activity logs" 
+              });
+            }
+
+            // 5. Delete all status records for workspace
+            const { error: statusError } = await supabase
+              .from("status")
+              .delete()
+              .eq("work_id", workspaceId);
+
+            if (statusError) {
+              console.error("Error deleting workspace status records:", statusError);
+              return res.status(500).json({ 
+                error: "Failed to delete workspace status records" 
+              });
+            }
+
+            // 6. Finally, delete the workspace itself
+            const { error: workspaceDeleteError } = await supabase
+              .from("workspaces")
+              .delete()
+              .eq("id", workspaceId);
+
+            if (workspaceDeleteError) {
+              console.error("Error deleting workspace:", workspaceDeleteError);
+              return res.status(500).json({ 
+                error: "Failed to delete workspace" 
+              });
+            }
+
+            return res.status(200).json({ 
+              message: "Workspace deleted successfully",
+              deletedWorkspace: {
+                id: workspaceId,
+                name: workspace.name
+              }
+            });
+
+          } catch (error: any) {
+            console.error("Error in deleteWorkspace:", error);
+            return res.status(500).json({ 
+              error: "Internal server error",
+              details: error.message 
+            });
+          }
+        }
+
         default:
           return res.status(400).json({ error: "Invalid action" });
       }

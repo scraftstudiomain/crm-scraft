@@ -72,6 +72,7 @@ import {
   useGetWorkspaceMembersQuery,
   useGetWorkspacesByIdQuery,
   useUpdateWorkspaceMutation,
+  useDeleteWorkspaceMutation,
 } from "@/lib/store/services/workspace";
 import { toast } from "sonner";
 import { useEffect } from "react";
@@ -228,6 +229,8 @@ export default function WorkspaceSettingsPage() {
     useResendInviteMutation();
   const [deleteMember, { isLoading: isDeleting, error: errorDeleting }] =
     useDeleteMemberMutation();
+  const [deleteWorkspace, { isLoading: isDeletingWorkspace, error: errorDeletingWorkspace }] =
+    useDeleteWorkspaceMutation();
 
   const searchParams = useParams();
   const urlSearchParams = useSearchParams();
@@ -244,6 +247,7 @@ export default function WorkspaceSettingsPage() {
   const [memberToDelete, setMemberToDelete] = useState<WorkspaceMember | null>(
     null
   );
+  const [showDeleteWorkspaceDialog, setShowDeleteWorkspaceDialog] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const {
     data: workspaceMembers,
@@ -260,8 +264,16 @@ export default function WorkspaceSettingsPage() {
 
   // Check if user is admin or super admin - simplified for now
   const isAdmin = true; // TODO: Fix role checking logic
-
+  
+  // Get current user and workspace owner info for proper role checking
+  const memberRole = memberRoleData?.data?.role;
+  // For now, we'll assume the user is the owner if they have admin role
+  // TODO: Implement proper user_id checking when the API returns it
+  const isOwner = memberRole === "admin" || memberRole === "SuperAdmin";
+  
   const [isEditMode, setIsEditMode] = useState(false);
+  
+
   const [tempSettings, setTempSettings] = useState<WorkspaceSettings | null>(
     null
   );
@@ -715,6 +727,39 @@ export default function WorkspaceSettingsPage() {
     }
   };
 
+  const confirmDeleteWorkspace = async () => {
+    if (!workspaceId) return;
+
+    try {
+      const result = await deleteWorkspace({ id: workspaceId }).unwrap();
+      
+      toast.success("Workspace deleted successfully");
+      setShowDeleteWorkspaceDialog(false);
+      
+      // Redirect to home page after successful deletion
+      window.location.href = "/";
+      
+    } catch (error: any) {
+      console.error("Delete workspace error:", error);
+      
+      let errorMessage = "Failed to delete workspace. Please try again.";
+      
+      if (error.status === 403) {
+        errorMessage = "You don't have permission to delete this workspace";
+      } else if (error.status === 404) {
+        errorMessage = "Workspace not found";
+      } else if (error.data?.error) {
+        errorMessage = error.data.error;
+      } else if (error.error) {
+        errorMessage = error.error;
+      } else if (typeof error === "string") {
+        errorMessage = error;
+      }
+
+      toast.error(errorMessage);
+    }
+  };
+
   const TabButton = ({
     id,
     icon: Icon,
@@ -779,26 +824,47 @@ export default function WorkspaceSettingsPage() {
               <CardHeader>
                 <CardTitle className="flex items-center justify-between w-full">
                   <span>Basic Information</span>
-                  {activeTab === "general" && !isEditMode ? (
+                  <div className="flex items-center gap-2">
+                    {!isEditMode && (
+                      <button
+                        onClick={handleEditClick}
+                        className="group relative flex items-center justify-center 
+           h-8 w-8 rounded-full 
+           bg-red-100 text-red-700 
+           dark:bg-red-800 dark:text-red-300 
+           hover:bg-red-200 dark:hover:bg-red-700 
+           transition-all duration-300 
+           ease-in-out 
+           transform hover:scale-105 
+           focus:outline-none 
+           focus:ring-2 
+           focus:ring-offset-2 
+           focus:ring-red-300"
+                        aria-label="Edit"
+                      >
+                        <Edit2 className="h-4 w-4 transition-transform group-hover:rotate-6" />
+                      </button>
+                    )}
                     <button
-                      onClick={handleEditClick}
+                      onClick={() => setShowDeleteWorkspaceDialog(true)}
                       className="group relative flex items-center justify-center 
          h-8 w-8 rounded-full 
-         bg-red-100 text-red-700 
-         dark:bg-red-800 dark:text-red-300 
-         hover:bg-red-200 dark:hover:bg-red-700 
+         bg-red-500 text-white 
+         dark:bg-red-600 dark:text-white 
+         hover:bg-red-600 dark:hover:bg-red-700 
          transition-all duration-300 
          ease-in-out 
          transform hover:scale-105 
          focus:outline-none 
          focus:ring-2 
          focus:ring-offset-2 
-         focus:ring-red-300"
-                      aria-label="Edit"
+         focus:ring-red-500"
+                      aria-label="Delete Workspace"
+                      title="Delete Workspace"
                     >
-                      <Edit2 className="h-4 w-4 transition-transform group-hover:rotate-6" />
+                      <Trash2 className="h-4 w-4 transition-transform group-hover:rotate-6" />
                     </button>
-                  ) : null}
+                  </div>
                 </CardTitle>
 
                 <CardDescription>
@@ -1566,6 +1632,55 @@ export default function WorkspaceSettingsPage() {
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Delete Workspace Confirmation Dialog */}
+      <AlertDialog
+        open={showDeleteWorkspaceDialog}
+        onOpenChange={setShowDeleteWorkspaceDialog}
+      >
+        <AlertDialogContent className="w-[90%] max-w-md">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-red-600 dark:text-red-400">
+              Delete Workspace
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              <div className="space-y-3">
+                <p className="font-semibold text-red-600 dark:text-red-400">
+                  ⚠️ WARNING: This will permanently delete your workspace!
+                </p>
+                <p>Are you absolutely sure you want to delete this workspace? This action will:</p>
+                <ul className="list-disc list-inside space-y-1 text-sm bg-red-50 dark:bg-red-900/20 p-3 rounded border border-red-200 dark:border-red-800">
+                  <li>🗑️ Delete all workspace members and their access</li>
+                  <li>📊 Delete all leads and customer data</li>
+                  <li>🔗 Delete all webhooks and integrations</li>
+                  <li>📝 Delete all activity logs and history</li>
+                  <li>🏷️ Delete all status records and tags</li>
+                  <li>🏢 Delete the workspace itself</li>
+                </ul>
+                <div className="bg-red-100 dark:bg-red-900/30 p-3 rounded border border-red-300 dark:border-red-700">
+                  <p className="font-bold text-red-800 dark:text-red-200">
+                    ⚠️ This action cannot be undone!
+                  </p>
+                  <p className="text-sm text-red-700 dark:text-red-300 mt-1">
+                    All data will be permanently lost and cannot be recovered.
+                  </p>
+                </div>
+
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={confirmDeleteWorkspace}
+              className="bg-red-600 hover:bg-red-700 dark:bg-red-700 dark:hover:bg-red-800"
+              disabled={isDeletingWorkspace}
+            >
+              {isDeletingWorkspace ? "Deleting..." : "Delete Workspace"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
